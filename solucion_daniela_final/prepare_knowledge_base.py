@@ -3,24 +3,11 @@ Script para preparar la base de conocimientos a partir de archivos CSV.
 Convierte los datos de productos y FAQs en documentos Markdown para vectorización.
 """
 import os
-import csv
 import pandas as pd
 import logging
-import sys
-from pathlib import Path
-from typing import Dict, List, Any
 import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
-
-# Importar configuración desde el mismo directorio
-def get_env_var(name, default=None):
-    value = os.environ.get(name)
-    if value is None:
-        if default is not None:
-            return default
-        raise RuntimeError(f"La variable de entorno {name} no está definida.")
-    return value
 
 from config import KNOWLEDGE_DIR, CATALOGO_PATH, FAQS_PATH
 
@@ -44,30 +31,100 @@ def process_faqs():
     """Procesa el archivo CSV de FAQs y crea documentos markdown individuales."""
     try:
         logger.info(f"Procesando FAQs desde {FAQS_PATH}")
-        df = pd.read_csv(FAQS_PATH)
+        
+        # Leer el CSV con manejo especial para texto con comas
+        try:
+            # Intentar primero leer con comillas dobles para campos con comas
+            df = pd.read_csv(FAQS_PATH, quotechar='"', escapechar='\\')
+        except Exception as e:
+            logger.warning(f"Error con primer método de lectura: {str(e)}")
+            try:
+                # Segundo intento con parámetros más permisivos
+                df = pd.read_csv(FAQS_PATH, sep=',', quotechar='"', doublequote=True, 
+                                 escapechar='\\', engine='python')
+            except Exception as e2:
+                logger.warning(f"Error con segundo método de lectura: {str(e2)}")
+                # Último intento: abrir el archivo manualmente y procesarlo línea por línea
+                with open(FAQS_PATH, 'r', encoding='utf-8') as file:
+                    lines = file.readlines()
+                
+                # Obtener encabezados de la primera línea
+                headers = lines[0].strip().split(',')
+                data = []
+                
+                # Procesar cada línea manualmente
+                for line in lines[1:]:
+                    # Dividir cada línea en sus campos, respetando comillas
+                    fields = []
+                    field = ""
+                    in_quotes = False
+                    
+                    for char in line:
+                        if char == '"':
+                            in_quotes = not in_quotes
+                            field += char
+                        elif char == ',' and not in_quotes:
+                            fields.append(field.strip())
+                            field = ""
+                        else:
+                            field += char
+                    
+                    # Añadir el último campo
+                    if field:
+                        fields.append(field.strip())
+                    
+                    # Asegurarse de que hay al menos 2 campos (pregunta y respuesta)
+                    if len(fields) >= 2:
+                        row_data = {}
+                        for i, header in enumerate(headers[:min(len(headers), len(fields))]):
+                            row_data[header] = fields[i]
+                        data.append(row_data)
+                
+                # Crear DataFrame desde los datos procesados manualmente
+                df = pd.DataFrame(data)
+        
+        # Verificar las columnas disponibles en el CSV
+        columns = df.columns.tolist()
+        logger.info(f"Columnas detectadas en el CSV de FAQs: {columns}")
+        
+        # Identificar las columnas principales
+        pregunta_col = [col for col in columns if 'pregunta' in col.lower()][0] if any('pregunta' in col.lower() for col in columns) else columns[0]
+        respuesta_col = [col for col in columns if 'respuesta' in col.lower()][0] if any('respuesta' in col.lower() for col in columns) else columns[1]
+        
+        # Columnas opcionales
+        categoria_col = next((col for col in columns if 'categor' in col.lower()), None)
+        etapa_col = next((col for col in columns if 'etapa' in col.lower()), None)
+        objetivo_col = next((col for col in columns if 'objetivo' in col.lower()), None)
+        siguiente_paso_col = next((col for col in columns if 'siguiente' in col.lower() or 'paso' in col.lower()), None)
         
         for idx, row in df.iterrows():
             # Crear un documento por cada FAQ
-            filename = f"faq_{idx:03d}_{row['Categoría'].lower().replace(' ', '_')}.md"
+            categoria = row[categoria_col] if categoria_col and pd.notna(row[categoria_col]) else "General"
+            filename = f"faq_{idx:03d}_{categoria.lower().replace(' ', '_')}.md"
             filepath = os.path.join(FAQS_DIR, filename)
             
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"# {row['Preguntas del cliente']}\n\n")
-                f.write(f"{row['Respuesta optimizada']}\n\n")
-                f.write(f"**Categoría:** {row['Categoría']}\n")
-                f.write(f"**Etapa:** {row['Etapa del embudo']}\n")
+                f.write(f"# {row[pregunta_col]}\n\n")
+                f.write(f"{row[respuesta_col]}\n\n")
                 
                 # Agregar información adicional si está disponible
-                if 'Objetivo de la respuesta' in row and pd.notna(row['Objetivo de la respuesta']):
-                    f.write(f"\n**Objetivo:** {row['Objetivo de la respuesta']}\n")
+                if categoria_col and pd.notna(row[categoria_col]):
+                    f.write(f"**Categoría:** {row[categoria_col]}\n")
                 
-                if 'Siguiente paso sugerido' in row and pd.notna(row['Siguiente paso sugerido']):
-                    f.write(f"\n**Siguiente paso sugerido:** {row['Siguiente paso sugerido']}\n")
+                if etapa_col and pd.notna(row[etapa_col]):
+                    f.write(f"**Etapa:** {row[etapa_col]}\n")
+                
+                if objetivo_col and pd.notna(row[objetivo_col]):
+                    f.write(f"\n**Objetivo:** {row[objetivo_col]}\n")
+                
+                if siguiente_paso_col and pd.notna(row[siguiente_paso_col]):
+                    f.write(f"\n**Siguiente paso sugerido:** {row[siguiente_paso_col]}\n")
             
         logger.info(f"Se procesaron {len(df)} FAQs")
     
     except Exception as e:
         logger.error(f"Error al procesar FAQs: {str(e)}")
+        logger.exception(e)
 
 
 def clean_value(value):
@@ -78,116 +135,150 @@ def clean_value(value):
 
 
 def process_catalogo():
-    """Procesa el archivo CSV del catálogo y crea documentos por categorías."""
+    """Procesa el archivo CSV del catálogo y crea documentos por categorías y productos."""
     try:
         logger.info(f"Procesando catálogo desde {CATALOGO_PATH}")
         
-        # Leer el archivo CSV sin headers y definir nombres de columnas según el formato observado
-        df = pd.read_csv(CATALOGO_PATH, header=None, dtype=str)
-        
-        # Agrupar productos por nombre
-        products = {}
-        current_id = None
-        current_name = None
-        
-        for i, row in df.iterrows():
-            # Si las primeras columnas tienen datos, es una entrada principal de producto
-            if pd.notna(row[0]) and pd.notna(row[1]):
-                current_id = clean_value(row[0])
-                current_name = clean_value(row[1])
+        # Leer el archivo CSV con manejo especial para delimitadores y comillas
+        try:
+            # Intentar primero con parámetros para manejar campos con comas
+            df = pd.read_csv(CATALOGO_PATH, quotechar='"', escapechar='\\')
+        except Exception as e:
+            logger.warning(f"Error con primer método de lectura: {str(e)}")
+            try:
+                # Segundo intento con parámetros más permisivos
+                df = pd.read_csv(CATALOGO_PATH, sep=',', quotechar='"', doublequote=True, 
+                                 escapechar='\\', engine='python')
+            except Exception as e2:
+                logger.warning(f"Error con segundo método de lectura: {str(e2)}")
+                # Último intento: abrir el archivo manualmente y procesarlo línea por línea
+                with open(CATALOGO_PATH, 'r', encoding='utf-8') as file:
+                    lines = file.readlines()
                 
-                if current_id not in products:
-                    products[current_id] = {
-                        "nombre": current_name,
-                        "categoria": clean_value(row[2]) if len(row) > 2 else "",
-                        "variantes": [],
-                        "precios": {}
-                    }
-            
-            # Si la primera columna está vacía pero tenemos un ID actual, es una variante
-            elif current_id is not None:
-                variante = {}
-                for j in range(3, min(9, len(row)), 2):
-                    if pd.notna(row[j]) and pd.notna(row[j+1]):
-                        prop_name = clean_value(row[j])
-                        prop_value = clean_value(row[j+1])
-                        variante[prop_name] = prop_value
+                # Obtener encabezados de la primera línea
+                headers = lines[0].strip().split(',')
+                data = []
                 
-                # Obtener precios si están disponibles
-                if len(row) > 9 and pd.notna(row[9]):
-                    precios = {
-                        "regular": clean_value(row[9]),
-                        "cuotas": clean_value(row[10]) if len(row) > 10 and pd.notna(row[10]) else "",
-                        "transferencia": clean_value(row[11]) if len(row) > 11 and pd.notna(row[11]) else ""
-                    }
+                # Procesar cada línea manualmente
+                for line in lines[1:]:
+                    # Dividir cada línea en sus campos, respetando comillas
+                    fields = []
+                    field = ""
+                    in_quotes = False
                     
-                    # Crear una clave única para esta variante basada en sus propiedades
-                    variant_key = "_".join([f"{k}_{v}" for k, v in variante.items()])
-                    products[current_id]["precios"][variant_key] = precios
+                    for char in line:
+                        if char == '"':
+                            in_quotes = not in_quotes
+                            field += char
+                        elif char == ',' and not in_quotes:
+                            fields.append(field.strip())
+                            field = ""
+                        else:
+                            field += char
+                    
+                    # Añadir el último campo
+                    if field:
+                        fields.append(field.strip())
+                    
+                    # Crear un diccionario con encabezados y valores
+                    if fields:
+                        row_data = {}
+                        for i, header in enumerate(headers[:min(len(headers), len(fields))]):
+                            row_data[header] = fields[i]
+                        data.append(row_data)
                 
-                if variante:
-                    products[current_id]["variantes"].append(variante)
+                # Crear DataFrame desde los datos procesados manualmente
+                df = pd.DataFrame(data)
         
-        # Agrupar productos por categoría
-        categories = {}
-        for prod_id, product in products.items():
-            cat = product["categoria"]
-            if ">" in cat:
-                main_cat = cat.split(">")[0].strip()
-                sub_cat = cat.split(">")[1].strip() if len(cat.split(">")) > 1 else ""
-                cat_key = f"{main_cat}_{sub_cat}" if sub_cat else main_cat
-            else:
-                cat_key = cat if cat else "Sin_Categoria"
-            
-            if cat_key not in categories:
-                categories[cat_key] = []
-            
-            categories[cat_key].append((prod_id, product))
+        # Verificar las columnas disponibles
+        columns = df.columns.tolist()
+        logger.info(f"Columnas detectadas en el CSV de catálogo: {columns}")
         
-        # Crear documentos por categoría
-        for cat_key, products_list in categories.items():
-            filename = f"categoria_{cat_key.lower().replace(' ', '_').replace('/', '_')}.md"
+        # Identificar columnas principales
+        producto_col = next((col for col in columns if 'producto' in col.lower() or 'nombre' in col.lower()), columns[0])
+        descripcion_col = next((col for col in columns if 'descrip' in col.lower()), columns[1] if len(columns) > 1 else None)
+        precio_col = next((col for col in columns if 'precio' in col.lower()), columns[2] if len(columns) > 2 else None)
+        categoria_col = next((col for col in columns if 'categor' in col.lower()), None)
+        
+        # Crear un archivo por producto 
+        for idx, row in df.iterrows():
+            producto = clean_value(row[producto_col])
+            if not producto:
+                continue  # Saltamos filas sin nombre de producto
+                
+            # Generar nombre de archivo seguro
+            filename = f"producto_{idx:03d}_{producto.lower().replace(' ', '_').replace('/', '_')}.md"
             filepath = os.path.join(PRODUCTOS_DIR, filename)
             
             with open(filepath, 'w', encoding='utf-8') as f:
-                cat_display = cat_key.replace('_', ' ')
-                f.write(f"# Categoría: {cat_display}\n\n")
+                # Título y detalles principales
+                f.write(f"# {producto}\n\n")
                 
-                for prod_id, product in products_list:
-                    f.write(f"## {product['nombre']}\n\n")
-                    f.write(f"ID: {prod_id}\n\n")
-                    
-                    if product['categoria']:
-                        f.write(f"Categoría: {product['categoria']}\n\n")
-                    
-                    # Escribir variantes
-                    if product['variantes']:
-                        f.write("### Variantes disponibles\n\n")
-                        for i, variante in enumerate(product['variantes']):
-                            if variante:
-                                f.write(f"**Variante {i+1}:** ")
-                                props = [f"{k}: {v}" for k, v in variante.items()]
-                                f.write(", ".join(props))
-                                
-                                # Añadir precios para esta variante
-                                variant_key = "_".join([f"{k}_{v}" for k, v in variante.items()])
-                                if variant_key in product['precios']:
-                                    precios = product['precios'][variant_key]
-                                    f.write("\n\n")
-                                    f.write(f"Precio regular: ${precios['regular']}\n")
-                                    if precios['cuotas']:
-                                        f.write(f"Precio en 6 cuotas sin interés: ${precios['cuotas']}\n")
-                                    if precios['transferencia']:
-                                        f.write(f"Precio por transferencia: ${precios['transferencia']}\n")
-                                
-                                f.write("\n\n")
-                    
-                    f.write("---\n\n")
+                # Categoría si existe
+                if categoria_col and pd.notna(row[categoria_col]):
+                    categoria = clean_value(row[categoria_col])
+                    f.write(f"**Categoría:** {categoria}\n\n")
+                
+                # Descripción
+                if descripcion_col and pd.notna(row[descripcion_col]):
+                    descripcion = clean_value(row[descripcion_col])
+                    f.write(f"## Descripción\n\n{descripcion}\n\n")
+                
+                # Precio
+                if precio_col and pd.notna(row[precio_col]):
+                    precio = clean_value(row[precio_col])
+                    f.write(f"## Precio\n\n**Precio:** ${precio}\n\n")
+                
+                # Otras características si existen (columnas adicionales)
+                f.write("## Características\n\n")
+                for col in columns:
+                    if col not in [producto_col, descripcion_col, precio_col, categoria_col] and pd.notna(row[col]):
+                        f.write(f"**{col}:** {clean_value(row[col])}\n\n")
         
-        logger.info(f"Se procesaron {len(products)} productos en {len(categories)} categorías")
+        # También crear archivos por categoría si existe la columna de categoría
+        if categoria_col:
+            categorias = {}
+            for idx, row in df.iterrows():
+                if pd.notna(row[categoria_col]):
+                    categoria = clean_value(row[categoria_col])
+                    if categoria not in categorias:
+                        categorias[categoria] = []
+                    
+                    producto_info = {
+                        "nombre": clean_value(row[producto_col]),
+                        "descripcion": clean_value(row[descripcion_col]) if descripcion_col and pd.notna(row[descripcion_col]) else "",
+                        "precio": clean_value(row[precio_col]) if precio_col and pd.notna(row[precio_col]) else ""
+                    }
+                    
+                    categorias[categoria].append(producto_info)
+            
+            # Crear un archivo por categoría
+            for categoria, productos in categorias.items():
+                if not categoria or not productos:
+                    continue
+                    
+                filename = f"categoria_{categoria.lower().replace(' ', '_').replace('/', '_')}.md"
+                filepath = os.path.join(PRODUCTOS_DIR, filename)
+                
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"# Categoría: {categoria}\n\n")
+                    
+                    for producto in productos:
+                        f.write(f"## {producto['nombre']}\n\n")
+                        
+                        if producto['descripcion']:
+                            f.write(f"{producto['descripcion']}\n\n")
+                        
+                        if producto['precio']:
+                            f.write(f"**Precio:** ${producto['precio']}\n\n")
+                        
+                        f.write("---\n\n")
+        
+        logger.info(f"Se procesaron {len(df)} productos en {len(categorias) if 'categorias' in locals() else 0} categorías")
     
     except Exception as e:
         logger.error(f"Error al procesar catálogo: {str(e)}")
+        logger.exception(e)
 
 
 def process_web_to_markdown(url, output_path):
@@ -218,12 +309,20 @@ def main():
     logger.info("Iniciando preparación de la base de conocimientos")
     ensure_directories()
 
-    # Obtener URL de la web del negocio desde variable de entorno
-    web_url = get_env_var("CASAMUEBLE_WEB_URL", "https://casamueble.com.ar/productos")
-    process_web_to_markdown(
-        url=web_url,
-        output_path=os.path.join(PRODUCTOS_DIR, "productos_web.md")
-    )
+    # Procesar datos de la web solo si la URL está definida en .env
+    try:
+        # Obtener URL de la web del negocio desde variable de entorno (.env)
+        web_url = os.environ.get("WEB_URL")
+        if web_url:
+            logger.info(f"URL de web encontrada en .env: {web_url}")
+            process_web_to_markdown(
+                url=web_url,
+                output_path=os.path.join(PRODUCTOS_DIR, "productos_web.md")
+            )
+        else:
+            logger.info("No se encontró la variable WEB_URL en .env, omitiendo procesamiento web")
+    except Exception as e:
+        logger.warning(f"Error al procesar datos de la web: {str(e)}. Continuando con el resto del proceso.")
 
     # Procesar FAQs y catálogo desde CSV
     process_faqs()

@@ -1,8 +1,8 @@
 """
-Chatbot RAG para Iron Home
+Chatbot RAG para Casa Mueble
 Este script implementa un chatbot basado en recuperación aumentada de generación (RAG)
 que utiliza una base de conocimientos vectorizada para responder preguntas sobre productos
-y servicios de Iron Home.
+y servicios de Casa Mueble.
 """
 import os
 import sys
@@ -32,16 +32,23 @@ logger = logging.getLogger(__name__)
 SYSTEM_TEMPLATE = """
 Eres un asistente virtual de Casa Mueble, una empresa especializada en muebles de alta calidad. Tu objetivo es ayudar a los clientes a encontrar productos, resolver dudas sobre la empresa y brindar una experiencia personalizada.
 
-INSTRUCCIONES:
+INSTRUCCIONES CRÍTICAS SOBRE ALUCINACIONES:
+- NUNCA, BAJO NINGUNA CIRCUNSTANCIA, debes inventar o fabricar información que no esté explícitamente en el contexto proporcionado.
+- SOLO menciona productos que existan explícitamente en el contexto. La lista completa de productos es: Camastro Leonor, Camastro Clara, Camastro Delfina, Sillón Clemente, Kit Barral Simple Completo, Kit Barral Doble Completo, Fogonero Perikles, Fogonero Efesto, Fogonero con Media Parrilla, Media Parrilla, Estaca Asador, Mesa Brisa 100x50 cm, Juego de Mesas Nido Redondas.
+- NUNCA menciones productos genéricos como "Mesa de Comedor Extensible" si no están explícitamente en el contexto.
+- NUNCA inventes precios. Si un precio no está explícitamente en el contexto, simplemente di que no tienes esa información.
+- Si encuentras una pregunta que requiere información no disponible en el contexto, simplemente admite que no tienes esa información específica.
+
+INSTRUCCIONES GENERALES:
 1. Sé amable, profesional y conciso en tus respuestas.
 2. MUY IMPORTANTE: SIEMPRE que el contexto incluya información de productos, muestra primero las opciones concretas (nombre, categoría, características, precio, etc.) relevantes a la consulta del cliente, ANTES de hacer preguntas o pedir aclaraciones.
 3. Si hay varios productos relevantes, muestra una lista breve y clara con nombre, categoría y precio (si está disponible), y luego ofrece ampliar detalles si el cliente lo desea.
-4. Si la información solicitada no está presente en el contexto, indica claramente que no tienes esa información y sugiere visitar la web oficial o contactar a la empresa.
-5. NUNCA inventes detalles, especialmente precios, características o disponibilidad de productos.
-6. Para datos específicos como precios, dimensiones o disponibilidad, cita la fuente de donde obtienes la información.
-7. Mantén una conversación fluida, reconociendo y recordando lo que el cliente ya mencionó previamente, pero NO retrases la presentación de productos con preguntas innecesarias.
-8. Evita repetir información que ya has proporcionado anteriormente.
-9. Si te piden un precio específico y no está en el contexto, NUNCA inventes un precio. En su lugar, di: "Lo siento, no tengo información sobre el precio de este producto en particular. Para obtener el precio actualizado, te recomiendo contactar directamente con Casa Mueble a través de su página web o número de atención al cliente."
+4. CRUCIAL: ANTES de indicar que no tienes información sobre un producto específico, BUSCA CUIDADOSAMENTE en todo el contexto proporcionado, prestando especial atención a nombres similares, variaciones ortográficas o productos de la misma categoría.
+5. Para datos específicos como precios, dimensiones o disponibilidad, cita la fuente de donde obtienes la información.
+6. Mantén una conversación fluida, reconociendo y recordando lo que el cliente ya mencionó previamente, pero NO retrases la presentación de productos con preguntas innecesarias.
+7. Evita repetir información que ya has proporcionado anteriormente.
+8. Si te piden un precio específico y no está en el contexto, NUNCA inventes un precio. En su lugar, di: "Lo siento, no tengo información sobre el precio de este producto en particular. Para obtener el precio actualizado, te recomiendo contactar directamente con Casa Mueble a través de su página web o número de atención al cliente."
+9. Si tras una búsqueda cuidadosa no encuentras información sobre un producto específico, NO INVENTES que el producto existe o tiene ciertas características. Di claramente que no tienes información sobre ese producto.
 
 CONTEXTO RELEVANTE (Esta es tu única fuente de información para responder):
 {context}
@@ -110,13 +117,11 @@ def load_llm():
     Returns:
         El modelo de lenguaje cargado o None si ocurre un error
     """
-    logger.info("Cargando modelo de lenguaje")
-    
-    # Primera opción: probar con OpenAI si hay API key disponible
+    logger.info("Cargando modelo de lenguaje")    # Primera opción: probar con OpenAI si hay API key disponible
     if os.environ.get("OPENAI_API_KEY"):
         try:
             logger.info("Usando OpenAI como modelo de lenguaje")
-            return ChatOpenAI(temperature=0.5, model_name="gpt-3.5-turbo")
+            return ChatOpenAI(temperature=0.1, model_name="gpt-3.5-turbo")
         except Exception as e:
             logger.warning(f"Error al cargar OpenAI: {str(e)}")
     
@@ -126,7 +131,7 @@ def load_llm():
             logger.info("Usando HuggingFace Hub como modelo de lenguaje")
             return HuggingFaceHub(
                 repo_id="google/flan-t5-base",
-                model_kwargs={"temperature": 0.5, "max_length": 512}
+                model_kwargs={"temperature": 0.1, "max_length": 512}
             )
         except Exception as e:
             logger.warning(f"Error al cargar HuggingFace Hub: {str(e)}")
@@ -157,10 +162,32 @@ def expand_query(query: str, chat_history: List[Dict[str, str]] = None) -> str:
         # Construir una consulta expandida con el contexto
         expanded_query = f"{query}. Contexto adicional de la conversación: {context}"
     
+    # Expandir nombres de productos específicos
+    product_specific_mappings = {
+        "camastro": ["camastro", "tumbona", "reposera", "sillón reclinable", "leonor", "clara", "delfina"],
+        "sillón": ["sillón", "sillon", "sofá", "sofa", "butaca", "clemente"],
+        "fogonero": ["fogonero", "brasero", "parrilla", "asador", "perikles", "efesto"],
+        "mesa": ["mesa", "escritorio", "mueble", "mesita", "brisa"],
+        "kit": ["kit", "conjunto", "set", "barral"]
+    }
+    
+    # Comprobar si la consulta contiene palabras clave de productos específicos
+    for product_type, synonyms in product_specific_mappings.items():
+        if any(term.lower() in query.lower() for term in synonyms):
+            # Si se encuentra un tipo de producto, añadir todos sus sinónimos a la consulta expandida
+            additional_terms = " ".join([term for term in synonyms if term.lower() not in expanded_query.lower()])
+            expanded_query = f"{expanded_query} {additional_terms}"
+            
+            # Si la consulta menciona un nombre específico, reforzarlo
+            for potential_name in ["leonor", "clara", "delfina", "clemente", "perikles", "efesto", "brisa"]:
+                if potential_name.lower() in query.lower():
+                    expanded_query = f"{expanded_query} producto {potential_name} específico"
+                    break
+    
     # Añadir términos específicos para mejorar la búsqueda
     product_keywords = [
         "mesa", "silla", "mueble", "fogonero", "estante", "rack", 
-        "biblioteca", "perchero", "espejo"
+        "biblioteca", "perchero", "espejo", "camastro", "sillón"
     ]
     
     for keyword in product_keywords:
@@ -196,6 +223,18 @@ def search_knowledge_base(query: str, vector_db: FAISS, k: int = 3, chat_history
         List[str]: Documentos relevantes encontrados
     """
     try:
+        # Detectar si la consulta es sobre un producto específico
+        product_specific = False
+        product_keywords = ["camastro", "sillón", "fogonero", "mesa", "parrilla", "kit", "barral", "estaca"]
+        for keyword in product_keywords:
+            if keyword.lower() in query.lower():
+                product_specific = True
+                break
+        
+        # Ajustar k si la consulta es sobre un producto específico
+        if product_specific:
+            k = 5  # Aumentar el número de resultados para consultas de productos específicos
+        
         # Expand query to improve search
         expanded_query = expand_query(query, chat_history)
         logger.info(f"Consulta original: '{query}' -> Expandida: '{expanded_query}'")
@@ -205,6 +244,16 @@ def search_knowledge_base(query: str, vector_db: FAISS, k: int = 3, chat_history
         
         # Búsqueda adicional con la consulta original para no perder resultados directos
         original_documents = vector_db.similarity_search(query, k=k)
+        
+        # Para productos específicos, realizar una búsqueda adicional con palabras clave exactas
+        if product_specific:
+            # Extraer posibles nombres de productos de la consulta
+            words = query.lower().split()
+            for word in words:
+                if len(word) > 3 and word not in ["que", "cual", "como", "donde", "quien", "tiene", "para"]:
+                    # Buscar documentos que contengan exactamente esa palabra
+                    exact_documents = vector_db.similarity_search(word, k=3)
+                    original_documents.extend(exact_documents)
         
         # Combinar resultados y eliminar duplicados
         all_docs = []
@@ -218,7 +267,8 @@ def search_knowledge_base(query: str, vector_db: FAISS, k: int = 3, chat_history
         
         # Formatear resultados con fuentes
         contexts = []
-        for doc in all_docs[:k]:  # Limitar a k resultados después de combinar
+        max_results = k + 2 if product_specific else k  # Más resultados para productos específicos
+        for doc in all_docs[:max_results]:  # Limitar a max_results después de combinar
             # Extraer metadata o nombre de archivo como fuente
             source = doc.metadata.get('source', 'Unknown source') if hasattr(doc, 'metadata') else 'Unknown source'
             
@@ -278,28 +328,66 @@ def process_query(user_input: str, vector_db: FAISS, llm=None, chat_history: Lis
             "question": user_input,
             "chat_history": formatted_history
         })
-        return response
-
-    # 4. Si no hay resultados, fallback contextualizado
-    formatted_history = format_chat_history(chat_history)
+        return response    # 4. Si no hay resultados, fallback contextualizado    formatted_history = format_chat_history(chat_history)
     fallback_context = (
         "No se encontró información relevante sobre esta consulta en nuestra base de datos. "
-        "Te recomiendo visitar la web oficial de Casa Mueble: https://casamueble.com.ar"
+        "IMPORTANTE: Debes indicar claramente al cliente que no dispones de información específica sobre su consulta. "
+        "NO inventes productos, características, precios, o cualquier otra información. "
+        "La lista completa de productos en nuestra base de conocimientos es: Camastro Leonor, Camastro Clara, Camastro Delfina, Sillón Clemente, "
+        "Kit Barral Simple Completo, Kit Barral Doble Completo, Fogonero Perikles, Fogonero Efesto, Fogonero con Media Parrilla, Media Parrilla, "
+        "Estaca Asador, Mesa Brisa 100x50 cm, Juego de Mesas Nido Redondas. "
+        "Recomienda al cliente visitar la web oficial: https://casamueble.com.ar"
     )
     # Si la consulta es sobre producto, armar URL personalizada
     product_keywords = ["producto", "mueble", "mesa", "silla", "fogonero", "camastro"]
     if any(word in user_input.lower() for word in product_keywords):
-        fallback_context += f"\nTambién podés buscar aquí: https://casamueble.com.ar/search/?q={user_input.replace(' ', '+')}"
+        fallback_context += f"\nTambién podés sugerir que busque aquí: https://casamueble.com.ar/search/?q={user_input.replace(' ', '+')}"
 
     prompt = ChatPromptTemplate.from_template(SYSTEM_TEMPLATE)
     output_parser = StrOutputParser()
-    chain = prompt | llm | output_parser
-    response = chain.invoke({
-        "context": fallback_context,
-        "question": user_input,
-        "chat_history": formatted_history
-    })
+    
+    # Si estamos usando LLM, utilizar la cadena normal
+    if llm:
+        chain = prompt | llm | output_parser
+        response = chain.invoke({
+            "context": fallback_context,
+            "question": user_input,
+            "chat_history": formatted_history
+        })
+    else:
+        # Si no hay LLM disponible, usar una respuesta predeterminada para evitar hallucinations
+        response = (
+            "Lo siento, no tengo información específica sobre tu consulta en mi base de datos. "
+            "Para obtener información actualizada y precisa, te recomiendo visitar la página web oficial "
+            "de Casa Mueble en https://casamueble.com.ar o contactar directamente con el servicio de atención al cliente."
+        )
     return response
+
+def save_conversation_log(chat_history, filename="conversation_log.txt"):
+    """
+    Guarda el historial de la conversación en un archivo de texto.
+    Args:
+        chat_history (list): Lista de mensajes (dicts con 'role' y 'content')
+        filename (str): Nombre del archivo donde guardar el log
+    """
+    # Crear ruta absoluta para el archivo de log
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n=== Nueva conversación ===\n")
+            f.write(f"Fecha y hora: {os.path.basename(__file__)} - {os.path.dirname(os.path.abspath(__file__))}\n")
+            for msg in chat_history:
+                role = "Usuario" if msg["role"] == "user" else "Asistente"
+                f.write(f"{role}: {msg['content']}\n")
+            f.write("\n=== Fin de la conversación ===\n\n")
+            
+        # Imprimir la ubicación del archivo para referencia
+        print(f"\n[Log guardado en: {log_path}]")
+        
+    except Exception as e:
+        logger.error(f"Error al guardar el log: {str(e)}")
+        print(f"\n[Error al guardar el log: {str(e)}]")
 
 def main():
     """Función principal para ejecutar el chatbot."""
@@ -321,7 +409,7 @@ def main():
         
     # Inicializar historial de conversación
     chat_history = []
-    
+    hubo_conversacion = False
     while True:
         # Obtener entrada del usuario
         user_input = input("\n👤 Tú: ")
@@ -329,6 +417,10 @@ def main():
         # Verificar si el usuario quiere salir
         if user_input.lower() in ["salir", "exit", "quit"]:
             print("\n🤖 Asistente: ¡Gracias por utilizar nuestro asistente virtual! ¡Hasta pronto!")
+            # Guardar log solo si hubo al menos un intercambio exitoso
+            if hubo_conversacion and len(chat_history) > 1:
+                save_conversation_log(chat_history)
+                print("\n[Conversación registrada en conversation_log.txt]")
             break
         
         # Agregar entrada del usuario al historial
@@ -345,6 +437,7 @@ def main():
             
             # Agregar respuesta al historial
             chat_history.append({"role": "assistant", "content": response})
+            hubo_conversacion = True
         except Exception as e:
             logger.error(f"Error al procesar la consulta: {str(e)}")
             error_msg = "Lo siento, ha ocurrido un error al procesar tu consulta. Por favor, intenta de nuevo."

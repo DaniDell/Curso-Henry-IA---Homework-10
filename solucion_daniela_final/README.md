@@ -160,3 +160,11 @@ def save_message(user_id, role, content):
 - **Documentación:** El README y los scripts están actualizados a la fecha (16/05/2025), pero cualquier cambio en el pipeline debe reflejarse aquí para mantener la trazabilidad.
 
 > _Este informe sirve como guía para la corrección y mejora continua del proyecto._
+
+---
+
+## Salvedad de la autora
+
+Este proyecto incluye una ampliación realizada por la alumna que desarrolló el challenge original. Además de cumplir con los requisitos planteados, se extendió la base de conocimiento y los casos de uso para enriquecer la experiencia y ejercitar el sistema con datos más representativos y realistas. Para ello, se tomó como caso de estudio una empresa dedicada a la comercialización de muebles, permitiendo así explorar escenarios más complejos y relevantes.
+
+Todos los detalles adicionales, documentación ampliada y recursos complementarios se encuentran dentro de la carpeta `solucion_daniela_final` del proyecto.
