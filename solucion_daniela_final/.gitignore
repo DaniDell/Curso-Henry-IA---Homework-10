@@ -1,0 +1,83 @@
+# Archivos de entorno y configuración
+.env
+*.env
+.venv
+env/
+venv/
+ENV/
+
+# Caché de modelos
+models_cache/
+**/models_cache/
+
+# Índice vectorial (se puede reconstruir)
+**/index/
+index/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# VS Code
+.vscode/
+.history/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.idea_modules/
+
+# Logs
+*.log
+logs/
+log/
+
+# Datos de prueba/temporales
+tmp/
+temp/
+.coverage
+htmlcov/
+
+# Archivos del sistema operativo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Archivos especialmente grandes (opcional)
+# Descomenta si necesitas excluir archivos específicos grandes
+# solucion_daniela/data/large_data_file.csv
+
+# Archivos de credenciales generados
+credentials.json
+token.json
+*.key

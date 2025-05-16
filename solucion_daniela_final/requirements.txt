@@ -1,0 +1,18 @@
+# Dependencias principales
+langchain
+langchain_community
+langchain-huggingface
+langchain-openai # Explicitly add for OpenAI
+huggingface-hub # Explicitly add for HuggingFace Hub LLMs
+faiss-cpu
+sentence-transformers
+pandas
+python-dotenv
+
+# Dependencias para procesamiento de texto
+beautifulsoup4
+markdownify
+numpy
+
+# Utilidades
+tqdm
